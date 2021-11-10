@@ -1,6 +1,32 @@
 #include <iostream>
+#include <cmath>
 #include <Poco/Net/DatagramSocket.h>
 #include <Poco/Net/SocketAddress.h>
+
+unsigned long getSumOfAllPrimesBelow(unsigned long number)
+{
+    auto isPrime = [](unsigned long number)
+    {
+        auto square = std::sqrt(number);
+        for (unsigned long i = 2; i <= square; ++i)
+        {
+            if (number % i == 0)
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+    unsigned long sum = 0;
+    for (unsigned long i = 1; i <= number; ++i)
+    {
+        if(isPrime(i))
+        {
+            sum += i;
+        }
+    }
+    return sum;
+}
 
 int main(int argc, char** argv)
 {
@@ -27,9 +53,14 @@ int main(int argc, char** argv)
 
         std::cout << "Received \"" << buffer << "\" from the client " << client_address.toString() << std::endl;
 
-        std::cout << "Sending it back..." << std::endl;
+        std::cout << "Calculating the result ... " << std::endl;
 
-        udp_socket.sendTo(buffer, size, client_address);
+        auto sum = getSumOfAllPrimesBelow(std::atol(buffer));
+
+        std::cout << "Sending result \"" << sum << "\" back..." << std::endl;
+
+        auto sum_string = std::to_string(sum);
+        udp_socket.sendTo(sum_string.c_str(), sum_string.size(), client_address);
     }
 
     return 0;
