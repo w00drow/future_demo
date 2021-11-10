@@ -1,8 +1,14 @@
 #include <iostream>
 #include <cmath>
 #include <chrono>
+#include <queue>
+#include <mutex>
+#include <future>
+#include <list>
 #include <Poco/Net/DatagramSocket.h>
 #include <Poco/Net/SocketAddress.h>
+
+using namespace std::literals::chrono_literals;
 
 unsigned long getSumOfAllPrimesBelow(unsigned long number)
 {
@@ -29,6 +35,29 @@ unsigned long getSumOfAllPrimesBelow(unsigned long number)
     return sum;
 }
 
+std::mutex mutex;
+std::condition_variable condition_variable;
+std::queue<std::pair<std::promise<int>, std::function<unsigned long()>>> tasks;
+
+void processor()
+{
+    while (true)
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        condition_variable.wait(lock, []{return !tasks.empty();});
+        if (!tasks.empty())
+        {
+            auto task = std::move(tasks.front());
+            tasks.pop();
+
+            lock.unlock();
+
+            auto value = task.second();
+            task.first.set_value(value);
+        }
+    }
+}
+
 int main(int argc, char** argv)
 {
     if (argc != 3)
@@ -45,6 +74,9 @@ int main(int argc, char** argv)
 
     Poco::Net::DatagramSocket udp_socket(server_address);
 
+    std::thread processor_tread(processor);
+
+    std::list<std::pair<std::future<int>, Poco::Net::SocketAddress>> results;
     while (true)
     {
         if (udp_socket.poll(Poco::Timespan(1, 0), Poco::Net::Socket::SelectMode::SELECT_READ))
@@ -55,21 +87,42 @@ int main(int argc, char** argv)
             buffer[size] = '\0';
 
             std::cout << "Received \"" << buffer << "\" from the client " << client_address.toString() << std::endl;
+            std::cout << "Schedule a task for processing ... " << std::endl;
 
-            std::cout << "Calculating the result ... " << std::endl;
+            auto number = std::atol(buffer);
 
-            auto sum = getSumOfAllPrimesBelow(std::atol(buffer));
+            std::promise<int> promise;
+            results.emplace_back(promise.get_future(), client_address);
 
-            std::cout << "Sending result \"" << sum << "\" back..." << std::endl;
-
-            auto sum_string = std::to_string(sum);
-            udp_socket.sendTo(sum_string.c_str(), sum_string.size(), client_address);
+            std::lock_guard<std::mutex> lock(mutex);
+            tasks.emplace(std::move(promise), [number]{return getSumOfAllPrimesBelow(number);});
+            condition_variable.notify_one();
         }
         else
         {
-            std::cout << "Doing service actions..." << std::endl;
+            auto it = results.begin();
+            while (it != results.end())
+            {
+                auto& future = it->first;
+                if (future.wait_for(1ms) == std::future_status::ready)
+                {
+                    auto sum_string = std::to_string(future.get());
+
+                    std::cout << "Sending result \"" << sum_string << "\" back to " << it->second.toString() << std::endl;
+
+                    udp_socket.sendTo(sum_string.c_str(), sum_string.size(), it->second);
+
+                    results.erase(it++);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
         }
     }
+
+    processor_tread.join();
 
     return 0;
 }
